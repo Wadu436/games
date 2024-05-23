@@ -758,7 +758,7 @@ impl ApplicationHandler for AppState {
     }
 }
 
-pub async fn run() -> eyre::Result<()> {
+pub fn run() -> eyre::Result<()> {
     // Initialize tracing
     FmtSubscriber::builder().with_max_level(Level::INFO).init();
 
