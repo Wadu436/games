@@ -14,10 +14,12 @@ use wgpu::{
     ShaderStages, SurfaceConfiguration, VertexBufferLayout,
 };
 use winit::{
-    event::{Event, KeyEvent, WindowEvent},
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::{KeyEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowBuilder},
+    window::Window,
 };
 
 #[repr(C)]
@@ -300,8 +302,8 @@ struct InputState {
     shoot: bool,
 }
 
-struct State<'a> {
-    surface: wgpu::Surface<'a>,
+struct GameState {
+    surface: wgpu::Surface<'static>,
     surface_config: SurfaceConfiguration,
     render_pipeline: RenderPipeline,
     device: wgpu::Device,
@@ -321,7 +323,7 @@ struct State<'a> {
     ball_direction: cgmath::Vector2<f32>,
 }
 
-impl<'a> State<'a> {
+impl GameState {
     pub async fn new(window: Arc<Window>) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -439,11 +441,17 @@ impl<'a> State<'a> {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &[Vertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    ..Default::default()
+                },
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(surface_format.into())],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    ..Default::default()
+                },
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -665,57 +673,101 @@ impl<'a> State<'a> {
     }
 }
 
+#[derive(Default)]
+enum AppState {
+    #[default]
+    Uninitialized,
+    Initialized {
+        window: Arc<Window>,
+        game_state: GameState,
+    },
+}
+
+impl ApplicationHandler for AppState {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        if let AppState::Uninitialized = self {
+            let window = Arc::new(
+                event_loop
+                    .create_window(
+                        Window::default_attributes()
+                            .with_title("Pong")
+                            .with_visible(false)
+                            // setting min and max size to 1024x768 forces i3 to make the window floating
+                            .with_min_inner_size(PhysicalSize {
+                                width: 1024,
+                                height: 768,
+                            })
+                            .with_max_inner_size(PhysicalSize {
+                                width: 1024,
+                                height: 768,
+                            }),
+                    )
+                    .unwrap(),
+            );
+
+            let game_state = pollster::block_on(GameState::new(window.clone()));
+
+            window.set_visible(true);
+
+            *self = AppState::Initialized { window, game_state };
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        if let AppState::Initialized { game_state, window } = self {
+            if window_id != window.id() {
+                return;
+            }
+
+            match event {
+                WindowEvent::CloseRequested => {
+                    event_loop.exit();
+                }
+                WindowEvent::Resized(size) => game_state.set_size(size),
+                WindowEvent::KeyboardInput { event, .. } => {
+                    game_state.input(&event);
+                }
+                WindowEvent::RedrawRequested => {
+                    game_state.update();
+                    match game_state.render() {
+                        Ok(()) => (),
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                            game_state.resize()
+                        }
+                        Err(wgpu::SurfaceError::OutOfMemory) => {
+                            error!("Out of memory; exiting");
+                            event_loop.exit();
+                        }
+                        Err(e) => error!("error while rendering: {:?}", e),
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        if let AppState::Initialized { window, .. } = self {
+            window.request_redraw();
+        }
+    }
+}
+
 pub async fn run() -> eyre::Result<()> {
     // Initialize tracing
     FmtSubscriber::builder().with_max_level(Level::INFO).init();
 
     // Build window, keep it hidden untill we're ready to start rendering
     let event_loop = EventLoop::new()?;
-    let window = Arc::new(
-        WindowBuilder::new()
-            .with_title("Pong")
-            .with_visible(false)
-            .build(&event_loop)?,
-    );
-
-    let mut state = State::new(window.clone()).await;
-
-    // ControlFlow::Poll continuously runs the event loop, even if the OS hasn't
-    // dispatched any events. This is ideal for games and similar applications.
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    window.set_visible(true);
-    event_loop.run(move |event, elwt| match event {
-        Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } => {
-            elwt.exit();
-        }
-        Event::WindowEvent {
-            event: WindowEvent::Resized(size),
-            ..
-        } => state.set_size(size),
-        Event::WindowEvent {
-            event: WindowEvent::KeyboardInput { event, .. },
-            ..
-        } => {
-            state.input(&event);
-        }
-        Event::AboutToWait => {
-            state.update();
-            match state.render() {
-                Ok(()) => (),
-                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => state.resize(),
-                Err(wgpu::SurfaceError::OutOfMemory) => {
-                    error!("Out of memory; exiting");
-                    elwt.exit();
-                }
-                Err(e) => error!("error while rendering: {:?}", e),
-            }
-        }
-        _ => {}
-    })?;
+    let mut app = AppState::default();
+    event_loop.run_app(&mut app)?;
 
     Ok(())
 }
