@@ -24,10 +24,11 @@ use winit::{
 };
 
 const BALL_SPEED: f32 = 2.0;
-const PADDLE_SPEED: f32 = 1.25;
+const BALL_DIAMETER: f32 = 0.05;
 
+const PADDLE_SPEED: f32 = 1.5;
 const PADDLE_HEIGHT: f32 = 0.5;
-const PADDLE_WIDTH: f32 = 0.1;
+const PADDLE_WIDTH: f32 = 0.05;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -290,7 +291,7 @@ struct GameObjects {
 
 impl GameObjects {
     fn new(device: &wgpu::Device, layout: &BindGroupLayout) -> Self {
-        let ball = Model::new(device, 0.1, 0.1, 0.0, 0.0, layout);
+        let ball = Model::new(device, BALL_DIAMETER, BALL_DIAMETER, 0.0, 0.0, layout);
         let paddle_1 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, -0.9, 0.2, layout);
         let paddle_2 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, 0.9, -0.6, layout);
         let wall_1 = Model::new(device, 2.0, 0.025, 0.0, 0.975, layout);
@@ -546,8 +547,9 @@ impl GameState {
 
         match self.game_phase {
             GamePhase::Ready => {
-                ball.translation =
-                    paddle_1.translation + Vector2::unit_x() * (1.25 * paddle_1.rectangle.width);
+                ball.translation = paddle_1.translation
+                    + Vector2::unit_x()
+                        * (1.25 * (ball.rectangle.width / 2.0 + paddle_1.rectangle.width / 2.0));
 
                 if self.input_state.shoot {
                     self.game_phase = GamePhase::Playing;
@@ -611,24 +613,28 @@ impl GameState {
                 }
 
                 // Check if the ball is behind the paddle
-                if ball.right() < paddle_1.left() - 0.1 {
+                if ball.center().x < paddle_1.center().x {
                     self.game_phase = GamePhase::Ready;
                     self.score.1 += 1;
                     info!("Score: {} - {}", self.score.0, self.score.1);
                 }
-                if ball.left() > paddle_2.right() + 0.1 {
+                if ball.center().x > paddle_2.center().x {
                     self.game_phase = GamePhase::Ready;
                     self.score.0 += 1;
                     info!("Score: {} - {}", self.score.0, self.score.1);
                 }
 
                 // update paddle 2
+                // Speed up band
                 if ball.translation.x > 0.0 && self.ball_direction.x > 0.0 {
+                    let max_movement = dt * PADDLE_SPEED;
+
                     // Move the paddle to the ball
-                    let delta_ball_paddle = ball.translation.y - paddle_2.translation.y + 0.1;
+                    let delta_ball_paddle =
+                        ball.translation.y - paddle_2.translation.y + self.paddle_2_target;
                     if delta_ball_paddle > 0.0 {
                         // Up
-                        paddle_2.translation.y += (dt * PADDLE_SPEED).min(delta_ball_paddle);
+                        paddle_2.translation.y += (max_movement).min(delta_ball_paddle);
                         if paddle_2.translation.y >= (0.95 - paddle_2.rectangle.height / 2.0) {
                             paddle_2.translation.y += -2.0
                                 * (paddle_2.translation.y
@@ -636,7 +642,7 @@ impl GameState {
                         }
                     } else {
                         // Down
-                        paddle_2.translation.y += (dt * -PADDLE_SPEED).max(delta_ball_paddle);
+                        paddle_2.translation.y += (-max_movement).max(delta_ball_paddle);
                         if paddle_2.translation.y <= -0.95 + paddle_2.rectangle.height / 2.0 {
                             paddle_2.translation.y += -2.0
                                 * (paddle_2.translation.y
