@@ -1,4 +1,5 @@
 use std::{
+    io::Read,
     sync::Arc,
     time::{self, Duration},
 };
@@ -10,9 +11,9 @@ use tracing_subscriber::FmtSubscriber;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     vertex_attr_array, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry,
-    BindingType, BufferBindingType, BufferUsages, PipelineLayoutDescriptor,
-    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
-    ShaderStages, SurfaceConfiguration, VertexBufferLayout,
+    BindingType, BufferBindingType, BufferUsages, FragmentState, Origin3d,
+    PipelineLayoutDescriptor, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
+    RenderPipelineDescriptor, ShaderStages, SurfaceConfiguration, VertexBufferLayout, VertexState,
 };
 use winit::{
     application::ApplicationHandler,
@@ -29,6 +30,18 @@ const BALL_DIAMETER: f32 = 0.05;
 const PADDLE_SPEED: f32 = 1.5;
 const PADDLE_HEIGHT: f32 = 0.5;
 const PADDLE_WIDTH: f32 = 0.05;
+
+const NUM_CHARS_IN_FONT: usize = 12;
+
+const GLYPH_VERTEX_WIDTH: f32 = 0.15;
+const GLYPH_VERTEX_HEIGHT: f32 = 7. * GLYPH_VERTEX_WIDTH / 5.;
+const GLYPH_SPACING: f32 = 0.0;
+
+const TOP_WALL_Y: f32 = 0.975 - GLYPH_VERTEX_HEIGHT - WALL_HEIGHT;
+const BOTTOM_WALL_Y: f32 = -0.975;
+const WALL_HEIGHT: f32 = 0.025;
+const PLAYING_FIELD_CENTER: f32 = (TOP_WALL_Y + BOTTOM_WALL_Y) / 2.0;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -41,6 +54,26 @@ impl Vertex {
     fn desc() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as _,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: Self::ATTRIBS,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct UvVertex {
+    position: [f32; 3],
+    uv: [f32; 2],
+}
+
+impl UvVertex {
+    const ATTRIBS: &'static [wgpu::VertexAttribute] =
+        &vertex_attr_array![0=> Float32x3, 1=> Float32x2];
+
+    fn desc() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<UvVertex>() as _,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: Self::ATTRIBS,
         }
@@ -282,6 +315,13 @@ impl Model {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GlyphUniform {
+    translation: [f32; 2],
+    uv_offset: [f32; 2],
+}
+
 struct GameObjects {
     ball: Model,
     paddle_1: Model,
@@ -292,10 +332,10 @@ struct GameObjects {
 impl GameObjects {
     fn new(device: &wgpu::Device, layout: &BindGroupLayout) -> Self {
         let ball = Model::new(device, BALL_DIAMETER, BALL_DIAMETER, 0.0, 0.0, layout);
-        let paddle_1 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, -0.9, 0.2, layout);
-        let paddle_2 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, 0.9, -0.6, layout);
-        let wall_1 = Model::new(device, 2.0, 0.025, 0.0, 0.975, layout);
-        let wall_2 = Model::new(device, 2.0, 0.025, 0.0, -0.975, layout);
+        let paddle_1 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, -0.9, PLAYING_FIELD_CENTER, layout);
+        let paddle_2 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, 0.9, PLAYING_FIELD_CENTER, layout);
+        let wall_1 = Model::new(device, 2.0, WALL_HEIGHT, 0.0, TOP_WALL_Y, layout);
+        let wall_2 = Model::new(device, 2.0, WALL_HEIGHT, 0.0, BOTTOM_WALL_Y, layout);
 
         GameObjects {
             ball,
@@ -342,6 +382,9 @@ struct GameState {
     game_phase: GamePhase,
     score: (u32, u32),
     ball_direction: cgmath::Vector2<f32>,
+    gui_pipeline: RenderPipeline,
+    font_texture: wgpu::Texture,
+    font_bind_group: wgpu::BindGroup,
 }
 
 impl GameState {
@@ -489,6 +532,158 @@ impl GameState {
             multiview: None,
         });
 
+        let font_bytes = include_bytes!("../assets/font.png");
+        let font_image = image::load_from_memory(font_bytes).unwrap().to_rgba8();
+        let font_dimensions = font_image.dimensions();
+
+        let font_texture_size = wgpu::Extent3d {
+            width: font_dimensions.0,
+            height: font_dimensions.1,
+            depth_or_array_layers: 1,
+        };
+        let font_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Font texture"),
+            size: font_texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::ImageCopyTextureBase {
+                texture: &font_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &font_image,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * font_dimensions.0),
+                rows_per_image: Some(font_dimensions.1),
+            },
+            font_texture_size,
+        );
+
+        let font_texture_view = font_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Font texture view"),
+            ..Default::default()
+        });
+        let font_texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Font texture sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let font_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("font_bind_group_layout"),
+                entries: &[
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let font_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("font_bind_group"),
+            layout: &font_bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&font_texture_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&font_texture_sampler),
+                },
+            ],
+        });
+
+        let glyph_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&[GlyphUniform {
+                translation: [0.0, 0.0],
+                uv_offset: [0.0, 0.0],
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Load the shaders
+        let gui_shader = device.create_shader_module(wgpu::include_wgsl!("gui.wgsl"));
+
+        let gui_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("gui_pipeline_layout"),
+            bind_group_layouts: &[&camera_bind_group_layout, &font_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let gui_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("gui_pipeline"),
+            layout: Some(&gui_pipeline_layout),
+            vertex: VertexState {
+                module: &gui_shader,
+                entry_point: "vs_main",
+                buffers: &[UvVertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    ..Default::default()
+                },
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &gui_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::OVER,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    ..Default::default()
+                },
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                // cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         Self {
             surface,
             surface_config,
@@ -510,6 +705,9 @@ impl GameState {
             ball_direction: cgmath::Vector2 { x: -1.25, y: 1.25 },
             game_phase: GamePhase::default(),
             score: (0, 0),
+            font_texture,
+            font_bind_group,
+            gui_pipeline,
         }
     }
 
@@ -538,11 +736,11 @@ impl GameState {
         // User input
         if self.input_state.move_up {
             paddle_1.translation.y = (paddle_1.translation.y + dt * PADDLE_SPEED)
-                .min(0.95 - paddle_1.rectangle.height / 2.0);
+                .min(TOP_WALL_Y - WALL_HEIGHT - paddle_1.rectangle.height / 2.0);
         }
         if self.input_state.move_down {
             paddle_1.translation.y = (paddle_1.translation.y - dt * PADDLE_SPEED)
-                .max(-0.95 + paddle_1.rectangle.height / 2.0);
+                .max(BOTTOM_WALL_Y + WALL_HEIGHT + paddle_1.rectangle.height / 2.0);
         }
 
         match self.game_phase {
@@ -561,15 +759,21 @@ impl GameState {
                 ball.translation += self.ball_direction * BALL_SPEED * dt;
 
                 // Check collision with wall
-                if ball.translation.y >= (0.9625 - ball.rectangle.height / 2.0) {
+                if ball.translation.y
+                    >= ((TOP_WALL_Y - WALL_HEIGHT / 2.0) - ball.rectangle.height / 2.0)
+                {
                     // reflect off the wall
-                    ball.translation.y +=
-                        -2.0 * (ball.translation.y - (0.9625 - ball.rectangle.height / 2.0));
+                    ball.translation.y += -2.0
+                        * (ball.translation.y
+                            - ((TOP_WALL_Y - WALL_HEIGHT / 2.0) - ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
                 }
-                if ball.translation.y <= (-0.9625 + ball.rectangle.height / 2.0) {
-                    ball.translation.y +=
-                        -2.0 * (ball.translation.y - (-0.9625 + ball.rectangle.height / 2.0));
+                if ball.translation.y
+                    <= ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0)
+                {
+                    ball.translation.y += -2.0
+                        * (ball.translation.y
+                            - ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
                 }
 
@@ -634,20 +838,14 @@ impl GameState {
                         ball.translation.y - paddle_2.translation.y + self.paddle_2_target;
                     if delta_ball_paddle > 0.0 {
                         // Up
-                        paddle_2.translation.y += (max_movement).min(delta_ball_paddle);
-                        if paddle_2.translation.y >= (0.95 - paddle_2.rectangle.height / 2.0) {
-                            paddle_2.translation.y += -2.0
-                                * (paddle_2.translation.y
-                                    - (0.95 - paddle_2.rectangle.height / 2.0));
-                        }
+                        paddle_2.translation.y = (paddle_2.translation.y
+                            + (max_movement).min(delta_ball_paddle))
+                        .min(TOP_WALL_Y - WALL_HEIGHT - paddle_2.rectangle.height / 2.0);
                     } else {
                         // Down
-                        paddle_2.translation.y += (-max_movement).max(delta_ball_paddle);
-                        if paddle_2.translation.y <= -0.95 + paddle_2.rectangle.height / 2.0 {
-                            paddle_2.translation.y += -2.0
-                                * (paddle_2.translation.y
-                                    - (-0.95 + paddle_2.rectangle.height / 2.0));
-                        }
+                        paddle_2.translation.y = (paddle_2.translation.y
+                            + (-max_movement).max(delta_ball_paddle))
+                        .max(BOTTOM_WALL_Y + WALL_HEIGHT + paddle_2.rectangle.height / 2.0);
                     }
                 }
             }
@@ -725,6 +923,121 @@ impl GameState {
                 .for_each(|wall| wall.render(&mut render_pass));
         }
 
+        fn calculate_text_width(text: &str) -> f32 {
+            let num_chars = text.chars().count();
+
+            num_chars as f32 * (GLYPH_VERTEX_WIDTH) + (num_chars - 1) as f32 * GLYPH_SPACING
+        }
+
+        fn generate_glyph_render_data(
+            device: &wgpu::Device,
+            text: &str,
+            x: f32,
+            y: f32,
+        ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+            let mut vertex_data: Vec<UvVertex> = Vec::with_capacity(4 * text.chars().count());
+            let mut index_data: Vec<u32> = Vec::with_capacity(6 * text.chars().count());
+
+            for (i, c) in text.chars().enumerate() {
+                let base_x = x + (i as f32) * (GLYPH_VERTEX_WIDTH + GLYPH_SPACING);
+                let base_index = vertex_data.len() as u32;
+
+                if c == ' ' {
+                    continue;
+                }
+
+                let cell_offset = 1.0 / NUM_CHARS_IN_FONT as f32;
+                let uv_offset = match c {
+                    '1' => 0.0,
+                    '2' => cell_offset,
+                    '3' => 2.0 * cell_offset,
+                    '4' => 3.0 * cell_offset,
+                    '5' => 4.0 * cell_offset,
+                    '6' => 5.0 * cell_offset,
+                    '7' => 6.0 * cell_offset,
+                    '8' => 7.0 * cell_offset,
+                    '9' => 8.0 * cell_offset,
+                    '0' => 9.0 * cell_offset,
+                    '-' => 10.0 * cell_offset,
+                    _ => 11. * cell_offset,
+                };
+
+                vertex_data.extend_from_slice(&[
+                    UvVertex {
+                        position: [base_x, y, 0.0],
+                        uv: [uv_offset, 1.0],
+                    },
+                    UvVertex {
+                        position: [base_x + GLYPH_VERTEX_WIDTH, y, 0.0],
+                        uv: [uv_offset + cell_offset, 1.0],
+                    },
+                    UvVertex {
+                        position: [base_x, y + GLYPH_VERTEX_HEIGHT, 0.0],
+                        uv: [uv_offset, 0.0],
+                    },
+                    UvVertex {
+                        position: [base_x + GLYPH_VERTEX_WIDTH, y + GLYPH_VERTEX_HEIGHT, 0.0],
+                        uv: [uv_offset + cell_offset, 0.0],
+                    },
+                ]);
+                index_data.extend_from_slice(&[
+                    base_index + 0,
+                    base_index + 1,
+                    base_index + 2,
+                    base_index + 2,
+                    base_index + 1,
+                    base_index + 3,
+                ]);
+            }
+
+            info!("vertex_data: {:?}", vertex_data);
+            info!("index_data: {:?}", index_data);
+
+            let glyph_vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
+                label: Some("Glyph vertex buffer"),
+                contents: bytemuck::cast_slice(&vertex_data),
+                usage: BufferUsages::VERTEX,
+            });
+            let glyph_index_buffer = device.create_buffer_init(&BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&index_data),
+                usage: BufferUsages::INDEX,
+            });
+            let glyph_num_indices = index_data.len() as u32;
+
+            (glyph_vertex_buffer, glyph_index_buffer, glyph_num_indices)
+        }
+
+        {
+            let text = format!("{}-{}", self.score.0, self.score.1);
+            let text_width = calculate_text_width(&text);
+            let (vertex_buffer, index_buffer, num_indices) =
+                generate_glyph_render_data(&self.device, &text, -text_width / 2.0, TOP_WALL_Y+WALL_HEIGHT);
+
+            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Draw GUI
+            render_pass.set_pipeline(&self.gui_pipeline);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.font_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..num_indices, 0, 0..1);
+        }
+
         self.queue.submit(Some(encoder.finish()));
         frame.present();
 
@@ -737,11 +1050,11 @@ impl GameState {
             self.average_fps = self.frametimes.len() as f32 / total_frametime;
             self.frametimes.clear();
         }
-        // info!(
-        //     "frametime: {:.2} ms ({:.0} fps)",
-        //     1000. * frametime,
-        //     self.average_fps
-        // );
+        info!(
+            "frametime: {:.2} ms ({:.0} fps)",
+            1000. * frametime,
+            self.average_fps
+        );
 
         self.last_render_time = current_time;
 

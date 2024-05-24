@@ -18,3 +18,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 wgpu = "0.20"
 winit = "0.30"
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["png", "jpeg"]
