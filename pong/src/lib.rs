@@ -3,7 +3,8 @@ use std::{
     time::{self, Duration},
 };
 
-use cgmath::{Point2, SquareMatrix};
+use cgmath::{InnerSpace, Point2, SquareMatrix, Vector2};
+use rand::Rng;
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use wgpu::{
@@ -22,6 +23,11 @@ use winit::{
     window::Window,
 };
 
+const BALL_SPEED: f32 = 2.0;
+const PADDLE_SPEED: f32 = 1.25;
+
+const PADDLE_HEIGHT: f32 = 0.5;
+const PADDLE_WIDTH: f32 = 0.1;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -197,6 +203,10 @@ impl Model {
         self.translation.x + self.rectangle.width / 2.0
     }
 
+    fn center(&self) -> Vector2<f32> {
+        self.translation
+    }
+
     fn new(
         device: &wgpu::Device,
         width: f32,
@@ -281,8 +291,8 @@ struct GameObjects {
 impl GameObjects {
     fn new(device: &wgpu::Device, layout: &BindGroupLayout) -> Self {
         let ball = Model::new(device, 0.1, 0.1, 0.0, 0.0, layout);
-        let paddle_1 = Model::new(device, 0.1, 0.5, -0.9, 0.2, layout);
-        let paddle_2 = Model::new(device, 0.1, 0.5, 0.9, -0.6, layout);
+        let paddle_1 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, -0.9, 0.2, layout);
+        let paddle_2 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, 0.9, -0.6, layout);
         let wall_1 = Model::new(device, 2.0, 0.025, 0.0, 0.975, layout);
         let wall_2 = Model::new(device, 2.0, 0.025, 0.0, -0.975, layout);
 
@@ -302,6 +312,14 @@ struct InputState {
     shoot: bool,
 }
 
+// What part of the game we're in. e.g. waiting to shoot, playing, etc
+#[derive(Copy, Clone, Debug, Default)]
+enum GamePhase {
+    #[default]
+    Ready,
+    Playing,
+}
+
 struct GameState {
     surface: wgpu::Surface<'static>,
     surface_config: SurfaceConfiguration,
@@ -318,8 +336,10 @@ struct GameState {
     camera_bind_group: wgpu::BindGroup,
     game_objects: GameObjects,
     last_frame_start: Option<time::Instant>,
-    paddle_2_direction: bool,
+    paddle_2_target: f32,
     input_state: InputState,
+    game_phase: GamePhase,
+    score: (u32, u32),
     ball_direction: cgmath::Vector2<f32>,
 }
 
@@ -484,9 +504,11 @@ impl GameState {
             camera_buffer,
             camera_bind_group,
             last_frame_start: None,
-            paddle_2_direction: true,
+            paddle_2_target: 0.0,
             input_state: InputState::default(),
             ball_direction: cgmath::Vector2 { x: -1.25, y: 1.25 },
+            game_phase: GamePhase::default(),
+            score: (0, 0),
         }
     }
 
@@ -501,8 +523,6 @@ impl GameState {
     }
 
     pub fn update(&mut self) {
-        const PADDLE_SPEED: f32 = 1.;
-
         let current_frame_start = std::time::Instant::now();
         let dt = self
             .last_frame_start
@@ -511,6 +531,10 @@ impl GameState {
 
         // Update the paddle position and ball position then write the uniform buffers again
         let paddle_1 = &mut self.game_objects.paddle_1;
+        let paddle_2 = &mut self.game_objects.paddle_2;
+        let ball = &mut self.game_objects.ball;
+
+        // User input
         if self.input_state.move_up {
             paddle_1.translation.y = (paddle_1.translation.y + dt * PADDLE_SPEED)
                 .min(0.95 - paddle_1.rectangle.height / 2.0);
@@ -519,66 +543,112 @@ impl GameState {
             paddle_1.translation.y = (paddle_1.translation.y - dt * PADDLE_SPEED)
                 .max(-0.95 + paddle_1.rectangle.height / 2.0);
         }
+
+        match self.game_phase {
+            GamePhase::Ready => {
+                ball.translation =
+                    paddle_1.translation + Vector2::unit_x() * (1.25 * paddle_1.rectangle.width);
+
+                if self.input_state.shoot {
+                    self.game_phase = GamePhase::Playing;
+                    self.ball_direction = (Vector2::unit_x() + Vector2::unit_y()).normalize();
+                }
+            }
+            GamePhase::Playing => {
+                // Update the ball position
+                ball.translation += self.ball_direction * BALL_SPEED * dt;
+
+                // Check collision with wall
+                if ball.translation.y >= (0.9625 - ball.rectangle.height / 2.0) {
+                    // reflect off the wall
+                    ball.translation.y +=
+                        -2.0 * (ball.translation.y - (0.9625 - ball.rectangle.height / 2.0));
+                    self.ball_direction.y *= -1.;
+                }
+                if ball.translation.y <= (-0.9625 + ball.rectangle.height / 2.0) {
+                    ball.translation.y +=
+                        -2.0 * (ball.translation.y - (-0.9625 + ball.rectangle.height / 2.0));
+                    self.ball_direction.y *= -1.;
+                }
+
+                fn ball_reflection_direction(ball: &Model, wall: &Model) -> Vector2<f32> {
+                    let relative_intersect = (2.0 * (ball.center().y - wall.center().y)
+                        / wall.rectangle.height)
+                        .min(1.0)
+                        .max(-1.0);
+                    // 75 degrees to -75 degrees
+                    let angle = 75.0 / 180.0 * std::f32::consts::PI * relative_intersect;
+
+                    if ball.center().x < wall.center().x {
+                        Vector2::new(-f32::cos(angle), f32::sin(angle))
+                    } else {
+                        Vector2::new(f32::cos(angle), f32::sin(angle))
+                    }
+                }
+
+                // Check collision with paddles
+                // Left Paddle (paddle 1)
+                if self.ball_direction.x <= 0.0
+                    && ball.left() <= paddle_1.right()
+                    && ball.right() >= paddle_1.left()
+                    && ball.top() <= paddle_1.bottom()
+                    && ball.bottom() >= paddle_1.top()
+                {
+                    // self.ball_direction.x = self.ball_direction.x.abs();
+                    self.ball_direction = ball_reflection_direction(ball, paddle_1);
+                }
+
+                // Right paddle (paddle 2)
+                if self.ball_direction.x >= 0.0
+                    && ball.left() <= paddle_2.right()
+                    && ball.right() >= paddle_2.left()
+                    && ball.top() <= paddle_2.bottom()
+                    && ball.bottom() >= paddle_2.top()
+                {
+                    self.ball_direction = ball_reflection_direction(ball, paddle_2);
+                    let range = 0.9 * PADDLE_HEIGHT / 2.0;
+                    self.paddle_2_target = rand::thread_rng().gen_range(-range..range);
+                }
+
+                // Check if the ball is behind the paddle
+                if ball.right() < paddle_1.left() - 0.1 {
+                    self.game_phase = GamePhase::Ready;
+                    self.score.1 += 1;
+                    info!("Score: {} - {}", self.score.0, self.score.1);
+                }
+                if ball.left() > paddle_2.right() + 0.1 {
+                    self.game_phase = GamePhase::Ready;
+                    self.score.0 += 1;
+                    info!("Score: {} - {}", self.score.0, self.score.1);
+                }
+
+                // update paddle 2
+                if ball.translation.x > 0.0 && self.ball_direction.x > 0.0 {
+                    // Move the paddle to the ball
+                    let delta_ball_paddle = ball.translation.y - paddle_2.translation.y + 0.1;
+                    if delta_ball_paddle > 0.0 {
+                        // Up
+                        paddle_2.translation.y += (dt * PADDLE_SPEED).min(delta_ball_paddle);
+                        if paddle_2.translation.y >= (0.95 - paddle_2.rectangle.height / 2.0) {
+                            paddle_2.translation.y += -2.0
+                                * (paddle_2.translation.y
+                                    - (0.95 - paddle_2.rectangle.height / 2.0));
+                        }
+                    } else {
+                        // Down
+                        paddle_2.translation.y += (dt * -PADDLE_SPEED).max(delta_ball_paddle);
+                        if paddle_2.translation.y <= -0.95 + paddle_2.rectangle.height / 2.0 {
+                            paddle_2.translation.y += -2.0
+                                * (paddle_2.translation.y
+                                    - (-0.95 + paddle_2.rectangle.height / 2.0));
+                        }
+                    }
+                }
+            }
+        }
+
         paddle_1.update_uniform(&self.queue);
-
-        let paddle_2 = &mut self.game_objects.paddle_2;
-        if self.paddle_2_direction {
-            // Up
-            paddle_2.translation.y += dt * PADDLE_SPEED;
-            if paddle_2.translation.y >= (0.95 - paddle_2.rectangle.height / 2.0) {
-                paddle_2.translation.y +=
-                    -2.0 * (paddle_2.translation.y - (0.95 - paddle_2.rectangle.height / 2.0));
-                self.paddle_2_direction = !self.paddle_2_direction;
-            }
-        } else {
-            // Down
-            paddle_2.translation.y += dt * -PADDLE_SPEED;
-            if paddle_2.translation.y <= -0.95 + paddle_2.rectangle.height / 2.0 {
-                paddle_2.translation.y +=
-                    -2.0 * (paddle_2.translation.y - (-0.95 + paddle_2.rectangle.height / 2.0));
-                self.paddle_2_direction = !self.paddle_2_direction;
-            }
-        }
         paddle_2.update_uniform(&self.queue);
-
-        // Update the ball position
-        let ball = &mut self.game_objects.ball;
-        ball.translation += self.ball_direction * dt;
-
-        // Check collision with wall
-        if ball.translation.y >= (0.9625 - ball.rectangle.height / 2.0) {
-            // reflect off the wall
-            ball.translation.y +=
-                -2.0 * (ball.translation.y - (0.9625 - ball.rectangle.height / 2.0));
-            self.ball_direction.y *= -1.;
-        }
-        if ball.translation.y <= (-0.9625 + ball.rectangle.height / 2.0) {
-            ball.translation.y +=
-                -2.0 * (ball.translation.y - (-0.9625 + ball.rectangle.height / 2.0));
-            self.ball_direction.y *= -1.;
-        }
-
-        // Check collision with paddles
-        // Left Paddle (paddle 1)
-        if ball.left() <= paddle_1.right()
-            && ball.right() >= paddle_1.left()
-            && ball.top() <= paddle_1.bottom()
-            && ball.bottom() >= paddle_1.top()
-        {
-            self.ball_direction.x = self.ball_direction.x.abs();
-            info!("Colliding paddle 1!");
-        }
-
-        // Right paddle (paddle 2)
-        if ball.left() <= paddle_2.right()
-            && ball.right() >= paddle_2.left()
-            && ball.top() <= paddle_2.bottom()
-            && ball.bottom() >= paddle_2.top()
-        {
-            self.ball_direction.x = -self.ball_direction.x.abs();
-            info!("Colliding paddle 2!");
-        }
-
         ball.update_uniform(&self.queue);
 
         self.last_frame_start = Some(current_frame_start);
