@@ -1,5 +1,4 @@
 use std::{
-    io::Read,
     sync::Arc,
     time::{self, Duration},
 };
@@ -11,9 +10,9 @@ use tracing_subscriber::FmtSubscriber;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     vertex_attr_array, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry,
-    BindingType, BufferBindingType, BufferUsages, FragmentState, Origin3d,
-    PipelineLayoutDescriptor, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, ShaderStages, SurfaceConfiguration, VertexBufferLayout, VertexState,
+    BindingType, BufferBindingType, BufferUsages, PipelineLayoutDescriptor,
+    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
+    ShaderStages, SurfaceConfiguration, VertexBufferLayout, VertexState,
 };
 use winit::{
     application::ApplicationHandler,
@@ -315,13 +314,6 @@ impl Model {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GlyphUniform {
-    translation: [f32; 2],
-    uv_offset: [f32; 2],
-}
-
 struct GameObjects {
     ball: Model,
     paddle_1: Model,
@@ -332,8 +324,22 @@ struct GameObjects {
 impl GameObjects {
     fn new(device: &wgpu::Device, layout: &BindGroupLayout) -> Self {
         let ball = Model::new(device, BALL_DIAMETER, BALL_DIAMETER, 0.0, 0.0, layout);
-        let paddle_1 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, -0.9, PLAYING_FIELD_CENTER, layout);
-        let paddle_2 = Model::new(device, PADDLE_WIDTH, PADDLE_HEIGHT, 0.9, PLAYING_FIELD_CENTER, layout);
+        let paddle_1 = Model::new(
+            device,
+            PADDLE_WIDTH,
+            PADDLE_HEIGHT,
+            -0.9,
+            PLAYING_FIELD_CENTER,
+            layout,
+        );
+        let paddle_2 = Model::new(
+            device,
+            PADDLE_WIDTH,
+            PADDLE_HEIGHT,
+            0.9,
+            PLAYING_FIELD_CENTER,
+            layout,
+        );
         let wall_1 = Model::new(device, 2.0, WALL_HEIGHT, 0.0, TOP_WALL_Y, layout);
         let wall_2 = Model::new(device, 2.0, WALL_HEIGHT, 0.0, BOTTOM_WALL_Y, layout);
 
@@ -383,7 +389,6 @@ struct GameState {
     score: (u32, u32),
     ball_direction: cgmath::Vector2<f32>,
     gui_pipeline: RenderPipeline,
-    font_texture: wgpu::Texture,
     font_bind_group: wgpu::BindGroup,
 }
 
@@ -621,15 +626,6 @@ impl GameState {
             ],
         });
 
-        let glyph_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&[GlyphUniform {
-                translation: [0.0, 0.0],
-                uv_offset: [0.0, 0.0],
-            }]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
         // Load the shaders
         let gui_shader = device.create_shader_module(wgpu::include_wgsl!("gui.wgsl"));
 
@@ -705,7 +701,6 @@ impl GameState {
             ball_direction: cgmath::Vector2 { x: -1.25, y: 1.25 },
             game_phase: GamePhase::default(),
             score: (0, 0),
-            font_texture,
             font_bind_group,
             gui_pipeline,
         }
@@ -820,12 +815,10 @@ impl GameState {
                 if ball.center().x < paddle_1.center().x {
                     self.game_phase = GamePhase::Ready;
                     self.score.1 += 1;
-                    info!("Score: {} - {}", self.score.0, self.score.1);
                 }
                 if ball.center().x > paddle_2.center().x {
                     self.game_phase = GamePhase::Ready;
                     self.score.0 += 1;
-                    info!("Score: {} - {}", self.score.0, self.score.1);
                 }
 
                 // update paddle 2
@@ -981,7 +974,7 @@ impl GameState {
                     },
                 ]);
                 index_data.extend_from_slice(&[
-                    base_index + 0,
+                    base_index,
                     base_index + 1,
                     base_index + 2,
                     base_index + 2,
@@ -989,9 +982,6 @@ impl GameState {
                     base_index + 3,
                 ]);
             }
-
-            info!("vertex_data: {:?}", vertex_data);
-            info!("index_data: {:?}", index_data);
 
             let glyph_vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("Glyph vertex buffer"),
@@ -1011,8 +1001,12 @@ impl GameState {
         {
             let text = format!("{}-{}", self.score.0, self.score.1);
             let text_width = calculate_text_width(&text);
-            let (vertex_buffer, index_buffer, num_indices) =
-                generate_glyph_render_data(&self.device, &text, -text_width / 2.0, TOP_WALL_Y+WALL_HEIGHT);
+            let (vertex_buffer, index_buffer, num_indices) = generate_glyph_render_data(
+                &self.device,
+                &text,
+                -text_width / 2.0,
+                TOP_WALL_Y + WALL_HEIGHT,
+            );
 
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("render pass"),
