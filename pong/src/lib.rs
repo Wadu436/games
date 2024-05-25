@@ -1164,23 +1164,24 @@ enum AppState {
 impl ApplicationHandler for AppState {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if let AppState::Uninitialized = self {
-            let window = Arc::new(
-                event_loop
-                    .create_window(
-                        Window::default_attributes()
-                            .with_title("Pong")
-                            .with_visible(false)
-                            // setting min and max size to 1024x768 forces i3 to make the window floating
-                            .with_min_inner_size(PhysicalSize {
-                                width: 1024,
-                                height: 768,
-                            }), // .with_max_inner_size(PhysicalSize {
-                                //     width: 1024,
-                                //     height: 768,
-                                // }),
-                    )
-                    .unwrap(),
-            );
+            let attributes = Window::default_attributes()
+                .with_title("Pong")
+                .with_visible(false)
+                // setting min and max size to 1024x768 forces i3 to make the window floating
+                .with_min_inner_size(PhysicalSize {
+                    width: 1024,
+                    height: 768,
+                });
+            // .with_max_inner_size(PhysicalSize {
+            //     width: 1024,
+            //     height: 768,
+            // })
+
+            // Disable resizing on Windows because the Resize event doesn't get fired there apparently
+            #[cfg(windows)]
+            let attributes = attributes.with_resizable(false);
+
+            let window = Arc::new(event_loop.create_window(attributes).unwrap());
 
             let game_state = pollster::block_on(GameState::new(window.clone()));
 
