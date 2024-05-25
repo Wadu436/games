@@ -920,6 +920,7 @@ impl GameState {
                 .for_each(|wall| wall.render(&mut render_pass));
         }
 
+        #[allow(dead_code)]
         enum TextAlign {
             Left,
             Center,
@@ -1133,11 +1134,11 @@ impl GameState {
             self.average_fps = self.frametimes.len() as f32 / total_frametime;
             self.frametimes.clear();
         }
-        info!(
-            "frametime: {:.2} ms ({:.0} fps)",
-            1000. * frametime,
-            self.average_fps
-        );
+        // info!(
+        //     "frametime: {:.2} ms ({:.0} fps)",
+        //     1000. * frametime,
+        //     self.average_fps
+        // );
 
         self.last_render_time = current_time;
 
@@ -1169,10 +1170,10 @@ impl ApplicationHandler for AppState {
                                 width: 1024,
                                 height: 768,
                             })
-                            .with_max_inner_size(PhysicalSize {
-                                width: 1024,
-                                height: 768,
-                            }),
+                            // .with_max_inner_size(PhysicalSize {
+                            //     width: 1024,
+                            //     height: 768,
+                            // }),
                     )
                     .unwrap(),
             );
