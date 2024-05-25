@@ -387,6 +387,7 @@ struct GameState {
     ball_direction: cgmath::Vector2<f32>,
     gui_pipeline: RenderPipeline,
     font_bind_group: wgpu::BindGroup,
+    easter_egg: bool,
 }
 
 impl GameState {
@@ -701,6 +702,7 @@ impl GameState {
             score: (0, 0),
             font_bind_group,
             gui_pipeline,
+            easter_egg: false,
         }
     }
 
@@ -710,6 +712,7 @@ impl GameState {
             PhysicalKey::Code(KeyCode::ArrowUp) => self.input_state.move_up = pressed,
             PhysicalKey::Code(KeyCode::ArrowDown) => self.input_state.move_down = pressed,
             PhysicalKey::Code(KeyCode::Space) => self.input_state.shoot = pressed,
+            PhysicalKey::Code(KeyCode::KeyH) => self.easter_egg = pressed,
             _ => {}
         }
     }
@@ -1055,7 +1058,11 @@ impl GameState {
             // Title
             let title_buffers = generate_glyph_render_data(
                 &self.device,
-                "PONG",
+                if !self.easter_egg {
+                    "PONG"
+                } else {
+                    "Hanne is leuk!"
+                },
                 0.0,
                 TOP_WALL_Y + WALL_HEIGHT + LINE_SPACING + 0.8 * GLYPH_VERTEX_HEIGHT,
                 1.0,
