@@ -128,14 +128,6 @@ impl Rectangle {
     }
 }
 
-// #[rustfmt::skip]
-// pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
-//     1.0, 0.0, 0.0, 0.0,
-//     0.0, 1.0, 0.0, 0.0,
-//     0.0, 0.0, 0.5, 0.5,
-//     0.0, 0.0, 0.0, 1.0,
-// );
-
 // Needed because the projection matrix from cgmath maps to -1.0 <= z <= 1.0, while wgpu uses 0.0 <= z <= 1.0 as its clipping coords
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
@@ -451,7 +443,7 @@ impl GameState {
             height: size.height,
             alpha_mode: surface_caps.alpha_modes[0],
             // present_mode: surface_caps.present_modes[0],
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: wgpu::PresentMode::AutoNoVsync,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
