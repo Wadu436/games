@@ -30,16 +30,20 @@ const PADDLE_SPEED: f32 = 1.5;
 const PADDLE_HEIGHT: f32 = 0.5;
 const PADDLE_WIDTH: f32 = 0.05;
 
-const NUM_CHARS_IN_FONT: usize = 12;
+const FONT_COLS: usize = 7;
+const FONT_ROWS: usize = 7;
 
-const GLYPH_VERTEX_WIDTH: f32 = 0.15;
-const GLYPH_VERTEX_HEIGHT: f32 = 7. * GLYPH_VERTEX_WIDTH / 5.;
+const GLYPH_VERTEX_WIDTH: f32 = 0.1;
+const GLYPH_VERTEX_HEIGHT: f32 = 4. * GLYPH_VERTEX_WIDTH / 3.;
 const GLYPH_SPACING: f32 = 0.0;
+const LINE_SPACING: f32 = 0.0;
 
-const TOP_WALL_Y: f32 = 0.975 - GLYPH_VERTEX_HEIGHT - WALL_HEIGHT;
+const TOP_WALL_Y: f32 = 0.975 - 1.8 * GLYPH_VERTEX_HEIGHT - LINE_SPACING - WALL_HEIGHT;
 const BOTTOM_WALL_Y: f32 = -0.975;
 const WALL_HEIGHT: f32 = 0.025;
 const PLAYING_FIELD_CENTER: f32 = (TOP_WALL_Y + BOTTOM_WALL_Y) / 2.0;
+
+const PADDLE_X: f32 = 0.975;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -328,7 +332,7 @@ impl GameObjects {
             device,
             PADDLE_WIDTH,
             PADDLE_HEIGHT,
-            -0.9,
+            -PADDLE_X,
             PLAYING_FIELD_CENTER,
             layout,
         );
@@ -336,7 +340,7 @@ impl GameObjects {
             device,
             PADDLE_WIDTH,
             PADDLE_HEIGHT,
-            0.9,
+            PADDLE_X,
             PLAYING_FIELD_CENTER,
             layout,
         );
@@ -360,7 +364,7 @@ struct InputState {
 }
 
 // What part of the game we're in. e.g. waiting to shoot, playing, etc
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 enum GamePhase {
     #[default]
     Ready,
@@ -916,10 +920,10 @@ impl GameState {
                 .for_each(|wall| wall.render(&mut render_pass));
         }
 
-        fn calculate_text_width(text: &str) -> f32 {
-            let num_chars = text.chars().count();
-
-            num_chars as f32 * (GLYPH_VERTEX_WIDTH) + (num_chars - 1) as f32 * GLYPH_SPACING
+        enum TextAlign {
+            Left,
+            Center,
+            Right,
         }
 
         fn generate_glyph_render_data(
@@ -927,50 +931,104 @@ impl GameState {
             text: &str,
             x: f32,
             y: f32,
+            size_multiplier: f32,
+            text_align: TextAlign,
         ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
             let mut vertex_data: Vec<UvVertex> = Vec::with_capacity(4 * text.chars().count());
             let mut index_data: Vec<u32> = Vec::with_capacity(6 * text.chars().count());
 
+            let num_chars = text.chars().count();
+
+            let text_width = size_multiplier * num_chars as f32 * (GLYPH_VERTEX_WIDTH)
+                + (num_chars - 1) as f32 * GLYPH_SPACING;
+
+            let text_alignment_offset = match text_align {
+                TextAlign::Left => 0.0,
+                TextAlign::Center => -text_width / 2.0,
+                TextAlign::Right => -text_width,
+            };
+
             for (i, c) in text.chars().enumerate() {
-                let base_x = x + (i as f32) * (GLYPH_VERTEX_WIDTH + GLYPH_SPACING);
+                let base_x = x
+                    + text_alignment_offset
+                    + (i as f32) * (GLYPH_VERTEX_WIDTH + GLYPH_SPACING) * size_multiplier;
                 let base_index = vertex_data.len() as u32;
 
                 if c == ' ' {
                     continue;
                 }
 
-                let cell_offset = 1.0 / NUM_CHARS_IN_FONT as f32;
+                let x_cell_offset = 1.0 / FONT_COLS as f32;
+                let y_cell_offset = 1.0 / FONT_ROWS as f32;
                 let uv_offset = match c {
-                    '1' => 0.0,
-                    '2' => cell_offset,
-                    '3' => 2.0 * cell_offset,
-                    '4' => 3.0 * cell_offset,
-                    '5' => 4.0 * cell_offset,
-                    '6' => 5.0 * cell_offset,
-                    '7' => 6.0 * cell_offset,
-                    '8' => 7.0 * cell_offset,
-                    '9' => 8.0 * cell_offset,
-                    '0' => 9.0 * cell_offset,
-                    '-' => 10.0 * cell_offset,
-                    _ => 11. * cell_offset,
+                    '0' => [0.0, 0.0],
+                    '1' => [x_cell_offset, 0.0],
+                    '2' => [2.0 * x_cell_offset, 0.0],
+                    '3' => [3.0 * x_cell_offset, 0.0],
+                    '4' => [4.0 * x_cell_offset, 0.0],
+                    '5' => [5.0 * x_cell_offset, 0.0],
+                    '6' => [6.0 * x_cell_offset, 0.0],
+                    '7' => [0.0, y_cell_offset],
+                    '8' => [x_cell_offset, y_cell_offset],
+                    '9' => [2.0 * x_cell_offset, y_cell_offset],
+                    '-' => [3.0 * x_cell_offset, y_cell_offset],
+                    '.' => [4.0 * x_cell_offset, y_cell_offset],
+                    ',' => [5.0 * x_cell_offset, y_cell_offset],
+                    '?' => [6.0 * x_cell_offset, y_cell_offset],
+                    ':' => [0.0, 2.0 * y_cell_offset],
+                    ';' => [x_cell_offset, 2.0 * y_cell_offset],
+                    'a' | 'A' => [2.0 * x_cell_offset, 2.0 * y_cell_offset],
+                    'b' | 'B' => [3.0 * x_cell_offset, 2.0 * y_cell_offset],
+                    'c' | 'C' => [4.0 * x_cell_offset, 2.0 * y_cell_offset],
+                    'd' | 'D' => [5.0 * x_cell_offset, 2.0 * y_cell_offset],
+                    'e' | 'E' => [6.0 * x_cell_offset, 2.0 * y_cell_offset],
+                    'f' | 'F' => [0.0, 3.0 * y_cell_offset],
+                    'g' | 'G' => [x_cell_offset, 3.0 * y_cell_offset],
+                    'h' | 'H' => [2.0 * x_cell_offset, 3.0 * y_cell_offset],
+                    'i' | 'I' => [3.0 * x_cell_offset, 3.0 * y_cell_offset],
+                    'j' | 'J' => [4.0 * x_cell_offset, 3.0 * y_cell_offset],
+                    'k' | 'K' => [5.0 * x_cell_offset, 3.0 * y_cell_offset],
+                    'l' | 'L' => [6.0 * x_cell_offset, 3.0 * y_cell_offset],
+                    'm' | 'M' => [0.0, 4.0 * y_cell_offset],
+                    'n' | 'N' => [x_cell_offset, 4.0 * y_cell_offset],
+                    'o' | 'O' => [2.0 * x_cell_offset, 4.0 * y_cell_offset],
+                    'p' | 'P' => [3.0 * x_cell_offset, 4.0 * y_cell_offset],
+                    'q' | 'Q' => [4.0 * x_cell_offset, 4.0 * y_cell_offset],
+                    'r' | 'R' => [5.0 * x_cell_offset, 4.0 * y_cell_offset],
+                    's' | 'S' => [6.0 * x_cell_offset, 4.0 * y_cell_offset],
+                    't' | 'T' => [0.0, 5.0 * y_cell_offset],
+                    'u' | 'U' => [x_cell_offset, 5.0 * y_cell_offset],
+                    'v' | 'V' => [2.0 * x_cell_offset, 5.0 * y_cell_offset],
+                    'w' | 'W' => [3.0 * x_cell_offset, 5.0 * y_cell_offset],
+                    'x' | 'X' => [4.0 * x_cell_offset, 5.0 * y_cell_offset],
+                    'y' | 'Y' => [5.0 * x_cell_offset, 5.0 * y_cell_offset],
+                    'z' | 'Z' => [6.0 * x_cell_offset, 5.0 * y_cell_offset],
+                    '!' => [0.0, 6.0 * y_cell_offset],
+                    // '-' => [10.0 * x_cell_offset, 0.0],
+                    // '-' => 10.0 * cell_offset,
+                    _ => [6.0 * x_cell_offset, 6.0 * y_cell_offset],
                 };
 
                 vertex_data.extend_from_slice(&[
                     UvVertex {
                         position: [base_x, y, 0.0],
-                        uv: [uv_offset, 1.0],
+                        uv: [uv_offset[0], uv_offset[1] + y_cell_offset],
                     },
                     UvVertex {
-                        position: [base_x + GLYPH_VERTEX_WIDTH, y, 0.0],
-                        uv: [uv_offset + cell_offset, 1.0],
+                        position: [base_x + GLYPH_VERTEX_WIDTH * size_multiplier, y, 0.0],
+                        uv: [uv_offset[0] + x_cell_offset, uv_offset[1] + y_cell_offset],
                     },
                     UvVertex {
-                        position: [base_x, y + GLYPH_VERTEX_HEIGHT, 0.0],
-                        uv: [uv_offset, 0.0],
+                        position: [base_x, y + GLYPH_VERTEX_HEIGHT * size_multiplier, 0.0],
+                        uv: [uv_offset[0], uv_offset[1]],
                     },
                     UvVertex {
-                        position: [base_x + GLYPH_VERTEX_WIDTH, y + GLYPH_VERTEX_HEIGHT, 0.0],
-                        uv: [uv_offset + cell_offset, 0.0],
+                        position: [
+                            base_x + GLYPH_VERTEX_WIDTH * size_multiplier,
+                            y + GLYPH_VERTEX_HEIGHT * size_multiplier,
+                            0.0,
+                        ],
+                        uv: [uv_offset[0] + x_cell_offset, uv_offset[1]],
                     },
                 ]);
                 index_data.extend_from_slice(&[
@@ -999,37 +1057,68 @@ impl GameState {
         }
 
         {
-            let text = format!("{}-{}", self.score.0, self.score.1);
-            let text_width = calculate_text_width(&text);
-            let (vertex_buffer, index_buffer, num_indices) = generate_glyph_render_data(
+            // Title
+            let title_buffers = generate_glyph_render_data(
                 &self.device,
-                &text,
-                -text_width / 2.0,
-                TOP_WALL_Y + WALL_HEIGHT,
+                "PONG",
+                0.0,
+                TOP_WALL_Y + WALL_HEIGHT + LINE_SPACING + 0.8 * GLYPH_VERTEX_HEIGHT,
+                1.0,
+                TextAlign::Center,
             );
 
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("render pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            // Score
+            let score_buffers = {
+                let text = format!("{}-{}", self.score.0, self.score.1);
+                generate_glyph_render_data(
+                    &self.device,
+                    &text,
+                    0.0,
+                    TOP_WALL_Y + WALL_HEIGHT,
+                    0.8,
+                    TextAlign::Center,
+                )
+            };
 
-            // Draw GUI
-            render_pass.set_pipeline(&self.gui_pipeline);
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.font_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..num_indices, 0, 0..1);
+            let mut text_buffers = vec![title_buffers, score_buffers];
+
+            if self.game_phase == GamePhase::Ready {
+                // Render text
+                text_buffers.push(generate_glyph_render_data(
+                    &self.device,
+                    "press space to shoot",
+                    0.0,
+                    0.0,
+                    0.7,
+                    TextAlign::Center,
+                ));
+            }
+
+            {
+                let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("render pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                render_pass.set_pipeline(&self.gui_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.font_bind_group, &[]);
+                for (vertex_buffer, index_buffer, num_indices) in &text_buffers {
+                    render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                    render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..*num_indices, 0, 0..1);
+                }
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
