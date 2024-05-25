@@ -372,6 +372,7 @@ enum GamePhase {
 }
 
 struct GameState {
+    window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     surface_config: SurfaceConfiguration,
     render_pipeline: RenderPipeline,
@@ -685,6 +686,7 @@ impl GameState {
         });
 
         Self {
+            window,
             surface,
             surface_config,
             render_pipeline,
@@ -1133,7 +1135,10 @@ impl GameState {
         if total_frametime > 0.25 {
             self.average_fps = self.frametimes.len() as f32 / total_frametime;
             self.frametimes.clear();
+            self.window
+                .set_title(&format!("Pong - FPS: {:.0}", self.average_fps));
         }
+
         // info!(
         //     "frametime: {:.2} ms ({:.0} fps)",
         //     1000. * frametime,
@@ -1169,11 +1174,10 @@ impl ApplicationHandler for AppState {
                             .with_min_inner_size(PhysicalSize {
                                 width: 1024,
                                 height: 768,
-                            })
-                            // .with_max_inner_size(PhysicalSize {
-                            //     width: 1024,
-                            //     height: 768,
-                            // }),
+                            }), // .with_max_inner_size(PhysicalSize {
+                                //     width: 1024,
+                                //     height: 768,
+                                // }),
                     )
                     .unwrap(),
             );
