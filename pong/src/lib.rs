@@ -45,6 +45,8 @@ const PLAYING_FIELD_CENTER: f32 = (TOP_WALL_Y + BOTTOM_WALL_Y) / 2.0;
 
 const PADDLE_X: f32 = 0.975;
 
+mod audio;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -388,6 +390,8 @@ struct GameState {
     gui_pipeline: RenderPipeline,
     font_bind_group: wgpu::BindGroup,
     easter_egg: bool,
+    audio_system: audio::AudioSystem,
+    blip_sound: audio::Sound,
 }
 
 impl GameState {
@@ -678,6 +682,20 @@ impl GameState {
             multiview: None,
         });
 
+        // Load the sound file
+        let audio_system = audio::AudioSystem::new().unwrap();
+
+        let blip_bytes = include_bytes!("../assets/pongblipB3.wav");
+        let blip_sound = audio_system
+            .load_sound(std::io::Cursor::new(blip_bytes), false)
+            .unwrap();
+
+        let music_bytes = include_bytes!("../assets/music.wav");
+        let music_sound = audio_system
+            .load_sound(std::io::Cursor::new(music_bytes), true)
+            .unwrap();
+        audio_system.play_sound(music_sound);
+
         Self {
             window,
             surface,
@@ -703,6 +721,8 @@ impl GameState {
             font_bind_group,
             gui_pipeline,
             easter_egg: false,
+            audio_system,
+            blip_sound,
         }
     }
 
@@ -798,6 +818,7 @@ impl GameState {
                 {
                     // self.ball_direction.x = self.ball_direction.x.abs();
                     self.ball_direction = ball_reflection_direction(ball, paddle_1);
+                    self.audio_system.play_sound(self.blip_sound.clone());
                 }
 
                 // Right paddle (paddle 2)
@@ -810,6 +831,7 @@ impl GameState {
                     self.ball_direction = ball_reflection_direction(ball, paddle_2);
                     let range = 0.9 * PADDLE_HEIGHT / 2.0;
                     self.paddle_2_target = rand::thread_rng().gen_range(-range..range);
+                    self.audio_system.play_sound(self.blip_sound.clone());
                 }
 
                 // Check if the ball is behind the paddle
