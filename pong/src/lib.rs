@@ -391,7 +391,38 @@ struct GameState {
     font_bind_group: wgpu::BindGroup,
     easter_egg: bool,
     audio_system: audio::AudioSystem,
-    blip_sound: audio::Sound,
+    sounds: Sounds,
+}
+
+struct Sounds {
+    bounce_paddle: audio::Sound,
+    bounce_wall: audio::Sound,
+    music: audio::Sound,
+}
+
+impl Sounds {
+    fn new(audio_system: &audio::AudioSystem) -> Self {
+        let bounce_paddle_bytes = include_bytes!("../assets/pongblipF#4.wav");
+        let bounce_paddle = audio_system
+            .load_sound(std::io::Cursor::new(bounce_paddle_bytes), false)
+            .unwrap();
+
+        let bounce_wall_bytes = include_bytes!("../assets/pongblipD4.wav");
+        let bounce_wall = audio_system
+            .load_sound(std::io::Cursor::new(bounce_wall_bytes), false)
+            .unwrap();
+
+        let music_bytes = include_bytes!("../assets/music.wav");
+        let music = audio_system
+            .load_sound(std::io::Cursor::new(music_bytes), true)
+            .unwrap();
+
+        Self {
+            bounce_paddle,
+            bounce_wall,
+            music,
+        }
+    }
 }
 
 impl GameState {
@@ -685,16 +716,9 @@ impl GameState {
         // Load the sound file
         let audio_system = audio::AudioSystem::new().unwrap();
 
-        let blip_bytes = include_bytes!("../assets/pongblipB3.wav");
-        let blip_sound = audio_system
-            .load_sound(std::io::Cursor::new(blip_bytes), false)
-            .unwrap();
+        let sounds = Sounds::new(&audio_system);
 
-        let music_bytes = include_bytes!("../assets/music.wav");
-        let music_sound = audio_system
-            .load_sound(std::io::Cursor::new(music_bytes), true)
-            .unwrap();
-        audio_system.play_sound(music_sound);
+        audio_system.play_sound(sounds.music.clone());
 
         Self {
             window,
@@ -721,8 +745,8 @@ impl GameState {
             font_bind_group,
             gui_pipeline,
             easter_egg: false,
+            sounds,
             audio_system,
-            blip_sound,
         }
     }
 
@@ -783,6 +807,7 @@ impl GameState {
                         * (ball.translation.y
                             - ((TOP_WALL_Y - WALL_HEIGHT / 2.0) - ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
+                    self.audio_system.play_sound(self.sounds.bounce_wall.clone());
                 }
                 if ball.translation.y
                     <= ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0)
@@ -791,6 +816,7 @@ impl GameState {
                         * (ball.translation.y
                             - ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
+                    self.audio_system.play_sound(self.sounds.bounce_wall.clone());
                 }
 
                 fn ball_reflection_direction(ball: &Model, wall: &Model) -> Vector2<f32> {
@@ -818,7 +844,8 @@ impl GameState {
                 {
                     // self.ball_direction.x = self.ball_direction.x.abs();
                     self.ball_direction = ball_reflection_direction(ball, paddle_1);
-                    self.audio_system.play_sound(self.blip_sound.clone());
+                    self.audio_system
+                        .play_sound(self.sounds.bounce_paddle.clone());
                 }
 
                 // Right paddle (paddle 2)
@@ -831,7 +858,8 @@ impl GameState {
                     self.ball_direction = ball_reflection_direction(ball, paddle_2);
                     let range = 0.9 * PADDLE_HEIGHT / 2.0;
                     self.paddle_2_target = rand::thread_rng().gen_range(-range..range);
-                    self.audio_system.play_sound(self.blip_sound.clone());
+                    self.audio_system
+                        .play_sound(self.sounds.bounce_paddle.clone());
                 }
 
                 // Check if the ball is behind the paddle
