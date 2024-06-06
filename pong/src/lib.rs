@@ -428,7 +428,7 @@ impl Sounds {
 impl GameState {
     pub async fn new(window: Arc<Window>) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: wgpu::Backends::VULKAN,
             ..Default::default()
         });
 
@@ -807,7 +807,8 @@ impl GameState {
                         * (ball.translation.y
                             - ((TOP_WALL_Y - WALL_HEIGHT / 2.0) - ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
-                    self.audio_system.play_sound(self.sounds.bounce_wall.clone());
+                    self.audio_system
+                        .play_sound(self.sounds.bounce_wall.clone());
                 }
                 if ball.translation.y
                     <= ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0)
@@ -816,7 +817,8 @@ impl GameState {
                         * (ball.translation.y
                             - ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
-                    self.audio_system.play_sound(self.sounds.bounce_wall.clone());
+                    self.audio_system
+                        .play_sound(self.sounds.bounce_wall.clone());
                 }
 
                 fn ball_reflection_direction(ball: &Model, wall: &Model) -> Vector2<f32> {
@@ -928,6 +930,8 @@ impl GameState {
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
+        let recreate_swapchain = frame.suboptimal;
+
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             ..Default::default()
         });
@@ -1174,7 +1178,11 @@ impl GameState {
         }
 
         self.queue.submit(Some(encoder.finish()));
+
         frame.present();
+        if recreate_swapchain {
+            self.resize();
+        }
 
         let current_time = time::Instant::now();
 
@@ -1255,7 +1263,10 @@ impl ApplicationHandler for AppState {
                 WindowEvent::CloseRequested => {
                     event_loop.exit();
                 }
-                WindowEvent::Resized(size) => game_state.set_size(size),
+                WindowEvent::Resized(size) => {
+                    game_state.set_size(size);
+                    game_state.resize();
+                }
                 WindowEvent::KeyboardInput { event, .. } => {
                     game_state.input(&event);
                 }
