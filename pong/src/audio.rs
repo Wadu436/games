@@ -2,13 +2,11 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::Sample as _;
-use itertools::Itertools;
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 pub struct AudioSystem {
-    stream: cpal::Stream,
+    _stream: cpal::Stream,
     sounds: Arc<Mutex<Vec<Sound>>>,
     sample_rate: f64,
 }
@@ -16,8 +14,8 @@ pub struct AudioSystem {
 #[derive(Debug, Clone)]
 pub struct Sound {
     data: Vec<f32>,
-    channels: u16,
-    sample_rate: u32,
+    _channels: u16,
+    _sample_rate: u32,
     i: usize,
     repeat: bool,
     playing: bool,
@@ -66,7 +64,7 @@ impl AudioSystem {
         stream.play()?;
 
         Ok(Self {
-            stream,
+            _stream: stream,
             sounds,
             sample_rate,
         })
@@ -164,13 +162,11 @@ impl AudioSystem {
         // Load sound
         Ok(Sound {
             data: samples,
-            channels: spec.channels,
-            sample_rate: spec.sample_rate,
+            _channels: spec.channels,
+            _sample_rate: spec.sample_rate,
             i: 0,
             repeat,
             playing: true,
         })
     }
 }
-
-fn run<T>() {}
