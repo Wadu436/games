@@ -11,17 +11,15 @@ edition = "2021"
 bytemuck = { version = "1", features = ["derive"] }
 cgmath = "0.18"
 color-eyre = "0.6"
-cpal = { version = "0.15", features = ["jack"] }
 eyre = "0.6"
-hound = "3"
 itertools = "0.13"
 pollster = "0.3"
 rand = "0.8"
-rubato = "0.15.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 wgpu = "0.20"
 winit = "0.30"
+rodio = {version="0.18", default-features = false, features = ["wav", "vorbis"]}
 
 [dependencies.image]
 version = "0.25"

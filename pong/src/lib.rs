@@ -1,10 +1,12 @@
 use std::{
+    io::{self, Cursor, Read},
     sync::Arc,
     time::{self, Duration},
 };
 
 use cgmath::{InnerSpace, Point2, SquareMatrix, Vector2};
 use rand::Rng;
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use wgpu::{
@@ -45,7 +47,7 @@ const PLAYING_FIELD_CENTER: f32 = (TOP_WALL_Y + BOTTOM_WALL_Y) / 2.0;
 
 const PADDLE_X: f32 = 0.975;
 
-mod audio;
+// mod audio;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -58,7 +60,7 @@ impl Vertex {
 
     fn desc() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as _,
+            array_stride: std::mem::size_of::<Self>() as _,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: Self::ATTRIBS,
         }
@@ -78,7 +80,7 @@ impl UvVertex {
 
     fn desc() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
-            array_stride: std::mem::size_of::<UvVertex>() as _,
+            array_stride: std::mem::size_of::<Self>() as _,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: Self::ATTRIBS,
         }
@@ -390,32 +392,55 @@ struct GameState {
     gui_pipeline: RenderPipeline,
     font_bind_group: wgpu::BindGroup,
     easter_egg: bool,
-    audio_system: audio::AudioSystem,
+    _audio_stream: OutputStream,
+    audio_stream_handle: OutputStreamHandle,
     sounds: Sounds,
+    // audio_system: audio::AudioSystem,
+    // sounds: Sounds,
+}
+
+pub struct Sound(Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for Sound {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl Sound {
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        use std::fs::File;
+        let mut buf = Vec::new();
+        let mut file = File::open(path)?;
+        file.read_to_end(&mut buf)?;
+        Ok(Self(Arc::new(buf)))
+    }
+
+    pub fn from_slice(data: &[u8]) -> Self {
+        Self(Arc::new(data.to_vec()))
+    }
+
+    pub fn cursor(&self) -> Cursor<Self> {
+        io::Cursor::new(Self(self.0.clone()))
+    }
+
+    pub fn decoder(&self) -> Decoder<Cursor<Self>> {
+        rodio::Decoder::new(self.cursor()).unwrap()
+    }
 }
 
 struct Sounds {
-    bounce_paddle: audio::Sound,
-    bounce_wall: audio::Sound,
-    music: audio::Sound,
+    bounce_paddle: Sound,
+    bounce_wall: Sound,
+    music: Sound,
 }
 
 impl Sounds {
-    fn new(audio_system: &audio::AudioSystem) -> Self {
-        let bounce_paddle_bytes = include_bytes!("../assets/pongblipF#4.wav");
-        let bounce_paddle = audio_system
-            .load_sound(std::io::Cursor::new(bounce_paddle_bytes), false)
-            .unwrap();
-
-        let bounce_wall_bytes = include_bytes!("../assets/pongblipD4.wav");
-        let bounce_wall = audio_system
-            .load_sound(std::io::Cursor::new(bounce_wall_bytes), false)
-            .unwrap();
-
-        let music_bytes = include_bytes!("../assets/music.wav");
-        let music = audio_system
-            .load_sound(std::io::Cursor::new(music_bytes), true)
-            .unwrap();
+    fn new() -> Self {
+        let music = Sound::from_slice(include_bytes!("../assets/music.ogg").as_slice());
+        let bounce_paddle =
+            Sound::from_slice(include_bytes!("../assets/pongblipF#4.wav").as_slice());
+        let bounce_wall = Sound::from_slice(include_bytes!("../assets/pongblipD4.wav").as_slice());
 
         Self {
             bounce_paddle,
@@ -713,12 +738,14 @@ impl GameState {
             multiview: None,
         });
 
-        // Load the sound file
-        let audio_system = audio::AudioSystem::new().unwrap();
+        // Set up audio
+        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+        let sounds = Sounds::new();
 
-        let sounds = Sounds::new(&audio_system);
-
-        audio_system.play_sound(sounds.music.clone());
+        // Play the music
+        stream_handle
+            .play_raw(sounds.music.decoder().convert_samples())
+            .unwrap();
 
         Self {
             window,
@@ -745,8 +772,9 @@ impl GameState {
             font_bind_group,
             gui_pipeline,
             easter_egg: false,
+            _audio_stream: _stream,
+            audio_stream_handle: stream_handle,
             sounds,
-            audio_system,
         }
     }
 
@@ -807,8 +835,9 @@ impl GameState {
                         * (ball.translation.y
                             - ((TOP_WALL_Y - WALL_HEIGHT / 2.0) - ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
-                    self.audio_system
-                        .play_sound(self.sounds.bounce_wall.clone());
+                    self.audio_stream_handle
+                        .play_raw(self.sounds.bounce_wall.decoder().convert_samples())
+                        .unwrap();
                 }
                 if ball.translation.y
                     <= ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0)
@@ -817,15 +846,15 @@ impl GameState {
                         * (ball.translation.y
                             - ((BOTTOM_WALL_Y + WALL_HEIGHT / 2.0) + ball.rectangle.height / 2.0));
                     self.ball_direction.y *= -1.;
-                    self.audio_system
-                        .play_sound(self.sounds.bounce_wall.clone());
+                    self.audio_stream_handle
+                        .play_raw(self.sounds.bounce_wall.decoder().convert_samples())
+                        .unwrap();
                 }
 
                 fn ball_reflection_direction(ball: &Model, wall: &Model) -> Vector2<f32> {
                     let relative_intersect = (2.0 * (ball.center().y - wall.center().y)
                         / wall.rectangle.height)
-                        .min(1.0)
-                        .max(-1.0);
+                        .clamp(-1.0, 1.0);
                     // 75 degrees to -75 degrees
                     let angle = 75.0 / 180.0 * std::f32::consts::PI * relative_intersect;
 
@@ -846,8 +875,9 @@ impl GameState {
                 {
                     // self.ball_direction.x = self.ball_direction.x.abs();
                     self.ball_direction = ball_reflection_direction(ball, paddle_1);
-                    self.audio_system
-                        .play_sound(self.sounds.bounce_paddle.clone());
+                    self.audio_stream_handle
+                        .play_raw(self.sounds.bounce_paddle.decoder().convert_samples())
+                        .unwrap();
                 }
 
                 // Right paddle (paddle 2)
@@ -860,8 +890,9 @@ impl GameState {
                     self.ball_direction = ball_reflection_direction(ball, paddle_2);
                     let range = 0.9 * PADDLE_HEIGHT / 2.0;
                     self.paddle_2_target = rand::thread_rng().gen_range(-range..range);
-                    self.audio_system
-                        .play_sound(self.sounds.bounce_paddle.clone());
+                    self.audio_stream_handle
+                        .play_raw(self.sounds.bounce_paddle.decoder().convert_samples())
+                        .unwrap();
                 }
 
                 // Check if the ball is behind the paddle
@@ -1220,7 +1251,7 @@ enum AppState {
 
 impl ApplicationHandler for AppState {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        if let AppState::Uninitialized = self {
+        if matches!(self, Self::Uninitialized) {
             let attributes = Window::default_attributes()
                 .with_title("Pong")
                 .with_visible(false)
@@ -1244,7 +1275,7 @@ impl ApplicationHandler for AppState {
 
             window.set_visible(true);
 
-            *self = AppState::Initialized { window, game_state };
+            *self = Self::Initialized { window, game_state };
         }
     }
 
@@ -1254,7 +1285,7 @@ impl ApplicationHandler for AppState {
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        if let AppState::Initialized { game_state, window } = self {
+        if let Self::Initialized { game_state, window } = self {
             if window_id != window.id() {
                 return;
             }
@@ -1290,7 +1321,7 @@ impl ApplicationHandler for AppState {
     }
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        if let AppState::Initialized { window, .. } = self {
+        if let Self::Initialized { window, .. } = self {
             window.request_redraw();
         }
     }
